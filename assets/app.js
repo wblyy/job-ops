@@ -6,7 +6,7 @@
 
   var E = window.JOEngine;
   var LS_DB = 'jobops.db.v1';
-  var LS_PUSHED = 'jobops.pushed.v1';
+  var LS_PUSHED = 'jobops.pushed.v2';
   /* A WeChat conversation on a 390x844 screen leaves roughly this much room
      for one bubble before the reader must scroll. Measured in CSS pixels. */
   var BUBBLE_BUDGET = 600;
@@ -304,7 +304,21 @@
     render();
   }
 
-  function keyOf(job) { return job.c + '|' + job.t; }
+  /* A person is identified by what the operator would say out loud — name plus
+     one stable fact — so the same person coming back tomorrow is recognised
+     and a different person with the same name is not. No identity is stored
+     for anyone who is never pushed a job. */
+  function whoOf(profile) {
+    var p = profile || {};
+    var name = (p.name || '').replace(/\s+/g, '');
+    var ed = (p.school || '') + (p.gradYear || '');
+    if (!name && !ed) return '未署名';
+    return name + '@' + ed;
+  }
+
+  /* Push memory is per person: keying only on company|role would let one
+     candidate's push withhold that posting from every other candidate. */
+  function keyOf(job) { return whoOf(state.profile) + '|' + job.c + '|' + job.t; }
 
   function pushedSet() {
     try { return new Set(JSON.parse(localStorage.getItem(LS_PUSHED) || '[]')); } catch (e) { return new Set(); }
@@ -645,6 +659,20 @@
       el.addEventListener('keydown', function (e) { if (e.key === 'Enter') applyFacts(); });
     });
 
+    $('newPerson').onclick = function () {
+      state.profile = null;
+      state.scored = [];
+      state.current = 0;
+      state.tailoredFor = -1;
+      $('paste').value = '';
+      $('factsBlock').hidden = true;
+      $('tailor').innerHTML = '';
+      $('result').hidden = true;
+      $('empty').hidden = false;
+      toast('清空了，丢下一份简历进来');
+      window.scrollTo({top: 0, behavior: 'smooth'});
+    };
+
     $('copyMsg').onclick = copyMessage;
 
     $('confirm').onclick = function () {
@@ -700,6 +728,7 @@
     /* Read-only handle for the QA harness and for poking at the engine in a
        console. Nothing here writes outside the page. */
     window.__OPS__ = state;
+    window.__OPS__.demoText = DEMO;
     if (window.__OPS_AUTORUN__) {
       $('paste').value = DEMO;
       ingestText(DEMO, '示例简历');
