@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>岗位罗盘 · 接待台</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<header class="bar">
+  <div class="bar-title">岗位罗盘<i>接待台 / 企微人工跟进</i></div>
+  <div class="bar-stats">
+    <span>库<b id="statPool">—</b></span>
+    <span>匹配<b id="statMs">—</b></span>
+    <span class="zero">代按发送<b id="statSend">0</b></span>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <!-- ------------------------------------------------------------ intake -->
+  <section class="col in">
+    <div class="block">
+      <div class="sec-h">
+        <span class="lab">01 收简历</span>
+        <span class="hint">简历不出这台电脑</span>
+      </div>
+
+      <div class="drop" id="drop">
+        把简历拖进来，或 <span class="pickfile" id="pick">选一个文件</span>
+        <div class="drop-sub">pdf / docx / xlsx / csv / txt，单份不超过 5MB</div>
+      </div>
+      <input type="file" id="file" accept=".pdf,.docx,.xlsx,.xls,.csv,.txt,.md" hidden>
+
+      <textarea id="paste" placeholder="也可以直接粘贴简历全文。PDF 排版复杂时（双栏、表格、扫描件）粘贴比解析准。"></textarea>
+
+      <button class="btn primary" id="run">解析并匹配</button>
+      <button class="btn btn-ghost sm" id="demo" style="margin-top:8px">用示例简历试一次</button>
+    </div>
+
+    <div class="block" id="factsBlock" hidden>
+      <div class="sec-h">
+        <span class="lab">02 核对事实</span>
+        <span class="hint">可改，改完重新匹配</span>
+      </div>
+
+      <div class="facts">
+        <div class="facts-grid">
+          <label for="fName">姓名</label><input id="fName" autocomplete="off">
+          <label for="fSchool">学校</label><input id="fSchool" autocomplete="off">
+          <label for="fMajor">专业</label><input id="fMajor" autocomplete="off">
+          <label for="fDegree">学历</label><input id="fDegree" autocomplete="off" placeholder="大专 / 本科 / 硕士">
+          <label for="fYear">届别</label><input id="fYear" autocomplete="off" placeholder="如 2027">
+          <label for="fCity">现居</label><input id="fCity" autocomplete="off">
+          <label for="fDays">可到岗</label><input id="fDays" autocomplete="off" placeholder="每周几天">
+          <label for="fMonths">可实习</label><input id="fMonths" autocomplete="off" placeholder="连续几个月">
+        </div>
+        <p class="facts-note" id="factsNote"></p>
+      </div>
+    </div>
+
+    <div class="block">
+      <div class="sec-h">
+        <span class="lab">03 岗位库</span>
+      </div>
+      <div class="dbmeta" id="dbmeta">正在载入…</div>
+      <details class="dbpanel">
+        <summary>换一版数据库</summary>
+        <p class="facts-note" style="margin-top:10px">
+          新的 Excel 丢进来即可整表替换，覆盖后存本机，下次打开还是这一版。表头至少要有「岗位」「公司」，JD 列名包含「JD」或「描述」。
+        </p>
+        <div class="dbrow">
+          <button class="btn sm" id="dbPick">选一版新 Excel</button>
+          <button class="btn sm btn-ghost" id="dbReset">恢复内置版</button>
+        </div>
+        <input type="file" id="dbfile" accept=".xlsx,.xls,.csv" hidden>
+        <div id="dbnote" class="facts-note"></div>
+      </details>
+    </div>
+  </section>
+
+  <!-- ----------------------------------------------------------- results -->
+  <section class="col out">
+    <div id="empty" class="empty">
+      <b>左边丢一份简历进来。</b><br>
+      匹配在这一页完成：读简历、按岗位库打分、挑出今天唯一要跟的那一个，给出一段可以直接粘进企微的话。全程不上传、不联网、不等模型。<br><br>
+      现在的库里是 <span id="emptyPool">—</span> 个杭州互联网实习岗。<br><br>
+      分数 95 封顶，只用来排先后，不是录用概率；「代按发送」永远是 0，发不发由他本人决定。
+    </div>
+
+    <div id="result" hidden>
+
+      <!-- today's single pick -->
+      <div class="pick" id="pickCard"></div>
+
+      <!-- the message that goes to WeChat -->
+      <div class="block">
+        <div class="sec-h">
+          <span class="lab">发给求职者的话</span>
+          <span class="hint">手机一屏内，纯文字</span>
+        </div>
+        <div class="phone" id="phone">
+          <div class="phone-bar">
+            <span>企微 · 单条消息</span>
+            <span id="fitTag">—</span>
+          </div>
+          <div class="msg" id="msg"></div>
+          <div class="msg-meta">
+            <span id="msgLen">—</span>
+            <button class="btn sm stamp" id="copyMsg">复制这段话</button>
+          </div>
+        </div>
+        <div class="rule-note">
+          95 分是排序用的相对刻度，不是录用概率；5 分留给面试。这段话只陈述 JD 原文与简历原文的对应关系，不替求职者表态。
+        </div>
+      </div>
+
+      <!-- follow-up -->
+      <div class="block">
+        <div class="sec-h">
+          <span class="lab">他说「跟」之后</span>
+          <span class="hint">按这个岗重排，事实不动</span>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn stamp" id="confirm">生成改好的简历</button>
+          <button class="btn btn-ghost" id="next">换下一个岗看看</button>
+        </div>
+        <div id="tailor"></div>
+      </div>
+
+      <!-- full ranking -->
+      <div class="block">
+        <div class="sec-h">
+          <span class="lab">全部候选（按分数）</span>
+          <span class="hint" id="listHint">点一行切换今日推荐</span>
+        </div>
+        <div class="list" id="list"></div>
+      </div>
+
+    </div>
+  </section>
+
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script src="vendor/xlsx.full.min.js"></script>
+<script src="vendor/pdf.min.js"></script>
+<script src="vendor/pdf.worker.min.js"></script>
+<script src="vendor/jszip.min.js"></script>
+<script src="data.js"></script>
+<script src="assets/engine.js"></script>
+<script src="assets/app.js"></script>
+</body>
+</html>
