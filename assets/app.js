@@ -407,6 +407,15 @@
     if (job.edu) meta.push('<span>学历<b>' + esc(job.edu.replace(/^学历/, '')) + '</b></span>');
     if (job.act) meta.push('<span>招聘者<b>' + esc(job.act) + '</b></span>');
 
+    /* job.loc is "杭州\n杭州余杭区鼎创财富中心A幢1401": the city, then the street.
+       Printing it raw put a newline inside one line box and the address ended up
+       wrapping under the stamp. Split it so the city stays with the company and
+       the street gets its own line, which also drops the duplicated 杭州. */
+    var locParts = String(job.loc || '').split('\n').map(function (x) { return x.trim(); }).filter(Boolean);
+    var city = locParts[0] || '';
+    var street = locParts[1] || '';
+    if (street && city && street.indexOf(city) === 0) street = street.slice(city.length);
+
     var gates = (s.gates || []).filter(function (g) { return g.level !== 'info'; });
     var gateHtml = gates.length
       ? '<div class="gate-note">' + gates.map(function (g) {
@@ -416,10 +425,13 @@
 
     $('pickCard').innerHTML =
       '<div class="stamp">今日<br>一岗</div>' +
-      '<div class="pick-kicker"><span>今天只跟这一个</span><span class="dot"></span><span>' +
-        esc(s.family) + '方向</span></div>' +
-      '<div class="pick-title">' + esc(job.t) + '</div>' +
-      '<div class="pick-company">' + esc(job.c) + (job.loc ? ' · ' + esc(job.loc) : '') + '</div>' +
+      '<div class="pick-head">' +
+        '<div class="pick-kicker"><span>今天只跟这一个</span><span class="dot"></span><span>' +
+          esc(s.family) + '方向</span></div>' +
+        '<div class="pick-title">' + esc(job.t) + '</div>' +
+        '<div class="pick-company">' + esc(job.c) + (city ? ' · ' + esc(city) : '') + '</div>' +
+      '</div>' +
+      (street ? '<div class="pick-addr">' + esc(street) + '</div>' : '') +
       '<div class="pick-meta">' + meta.join('') + '</div>' +
       '<div class="pick-why">' + (pairs.length ? pairs.map(function (p, i) {
         return '<div class="why-row"><span class="n">' + (i + 1) + '</span><div>' +
