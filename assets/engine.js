@@ -53,6 +53,20 @@
     return out;
   }
 
+  /* Bigrams that any two resumes and any two JDs will share, because they are
+     filler verbs and generic nouns. Overlap made only of these is not evidence
+     that the same work was done — "能独立完成交互原型设计" and "SQL 独立完成订单
+     与品类分析" share 独立/立完/完成 and nothing else. */
+  var GENERIC_WORDS = '完成 独立 负责 参与 协助 支持 配合 进行 跟进 使用 熟练 掌握 具备 能力 良好 相关 工作 内容 要求 优先 项目 经验 熟悉 了解 能够 可以 以及 需要 提供 主导 搭建 落地 推进 优化 提升 管理 沟通 团队 时间 一定 一定 我们 你们 这个 那个 公司 用户 产品 实习 助理 岗位 职责 任职 描述 数据 分析 能力';
+  var GENERIC_BG = (function () {
+    var set = Object.create(null);
+    GENERIC_WORDS.split(/\s+/).forEach(function (w) {
+      if (w.length === 1) { set[w] = 1; return; }
+      for (var i = 0; i < w.length - 1; i++) set[w.slice(i, i + 2)] = 1;
+    });
+    return set;
+  })();
+
   /* Bigrams over CJK runs plus lowercase latin/digit words. Cheap and good
      enough for Chinese keyword overlap without a segmentation dictionary. */
   function tokens(text) {
@@ -192,6 +206,23 @@
     return line.replace(/^[•·∙◦▪●○\-–—*＊]\s*/, '').replace(/^\d{1,2}[.、)）]\s*/, '').replace(/^[（(]\d{1,2}[)）]\s*/, '').trim();
   }
 
+  /* A line that names where and when someone worked, but not what they did:
+     "公司 · 岗位 2025.07–2025.09". Usable as context, useless as proof. */
+  function isHeaderLine(text) {
+    var t = String(text || '');
+    if (t.length > 60) return false;
+    var hasRange = /20\d{2}\s*[.\-/年]\s*\d{1,2}\s*[-–—~至]\s*20\d{2}\s*[.\-/年]?\s*\d{0,2}/.test(t)
+      || /20\d{2}\s*[-–—~至]\s*20\d{2}/.test(t)
+      || /\d{4}\s*[.\-/]\s*\d{1,2}\s*[-–—~至]\s*(至今|现在|今)/.test(t);
+    if (!hasRange) return false;
+    // A dated line is still real evidence if it states an outcome. Strip job
+    // titles first, so "项目负责人" is not read as the verb "负责".
+    var head = t.split(/20\d{2}/)[0].replace(/负责人|负责人[：:]?|主导人/g, '');
+    if (/[\d.]+\s*(?:%|％|倍)/.test(t)) return false;
+    if (/(?:提升|增长|提高|增加|降低|下降|节省|缩短|达成|完成|负责|主导|搭建|落地|输出|设计)/.test(head)) return false;
+    return true;
+  }
+
   function parseResume(rawText) {
     var text = normalize(rawText);
     var lines = text.split('\n').map(function (l) { return l.trim(); }).filter(Boolean);
@@ -308,12 +339,17 @@
     p.sections.self = selfLines;
 
     // Evidence = every candidate sentence a recruiter could quote back.
+    // Section headers ("公司 · 岗位 2025.07–2025.09") are deliberately excluded:
+    // they carry a company and a date but no achievement, so quoting one back
+    // says nothing about what this person can do.
     p.bullets.forEach(function (b) {
+      if (isHeaderLine(b.text)) return;
       p.evidence.push({ text: b.text, section: b.section, nums: Object.keys(numbersIn(b.text)) });
     });
     expBlock.forEach(function (t) {
       var txt = punct(t);
       if (txt.length < 8) return;
+      if (isHeaderLine(txt)) return;
       if (!p.evidence.some(function (e) { return e.text === txt; })) {
         p.evidence.push({ text: txt, section: 'experience', nums: Object.keys(numbersIn(txt)) });
       }
@@ -541,21 +577,76 @@
     return bv === 0 ? '产品' : best;
   }
 
+  /* A result the candidate can point at: a number moving to another number, or
+     a bare percentage change. "活跃用户从 1200 提升到 3100" is the hardest
+     thing an intern resume can say, and bigram overlap scores it near zero
+     against a JD that says "用户增长" — so it needs to be recognised. */
+  var OUTCOME_RES = [
+    /从\s*[\d.,]+\s*[^，。；]{0,12}?(?:提升|增长|提高|增加|上涨|升至|升到|降低|下降)\s*(?:到|至|→)?\s*[\d.,]+/,
+    /(?:提升|增长|提高|增加|降低|下降|节省|缩短)[^\d，。；]{0,6}[\d.]+\s*(?:%|％|倍)/,
+    /[\d.]+\s*(?:%|％)\s*(?:到|至|→|->)\s*[\d.]+\s*(?:%|％)/
+  ];
+  function outcomeIn(text) {
+    var t = String(text || '');
+    for (var i = 0; i < OUTCOME_RES.length; i++) if (OUTCOME_RES[i].test(t)) return true;
+    return false;
+  }
+  /* The outcome a JD is asking for, named with the JD's own word. Ordered so
+     the fuller term wins: 用户增长 before 增长. */
+  var RESULT_CONCEPTS = ['用户增长', '付费转化', '转化率', '留存率', '复购率', '复购', '拉新', '留存', '转化', '活跃度', '活跃', '流失', '客单价', 'GMV'];
+  /* Metrics that answer different questions. A JD asking for 付费转化 is not
+     answered by a resume saying 活跃用户 grew: that is a different number
+     moving, and pretending otherwise is the exact overreach this tool avoids. */
+  var RESULT_FAMILY = {
+    '用户增长': 'growth', '拉新': 'growth', '活跃': 'growth', '活跃度': 'growth', '留存': 'growth', '留存率': 'growth',
+    '流失': 'growth', '复购': 'growth', '复购率': 'growth',
+    '付费转化': 'money', '转化': 'money', '转化率': 'money', '客单价': 'money', 'GMV': 'money'
+  };
+  function resultConcepts(text) {
+    var t = String(text || ''), out = [];
+    for (var i = 0; i < RESULT_CONCEPTS.length; i++) if (t.indexOf(RESULT_CONCEPTS[i]) >= 0) out.push(RESULT_CONCEPTS[i]);
+    // Drop a shorter concept already covered by a longer one (活跃 inside 活跃度).
+    return out.filter(function (c) { return !out.some(function (d) { return d !== c && d.indexOf(c) >= 0; }); });
+  }
+
+  /* The clause of a resume line that carries the change, on its own. Quoting
+     the whole line buries the numbers behind the setup clause. */
+  function resultClause(s) {
+    var t = punct(String(s || '').replace(/\s+/g, ' ').trim());
+    var parts = t.split(/[，、；]/);
+    for (var i = 0; i < parts.length; i++) {
+      if (outcomeIn(parts[i])) return parts[i].replace(/^[^一-龥A-Za-z0-9]+/, '').trim();
+    }
+    return t;
+  }
+
+  /* Degree, major and graduation-year requirements are gates, not duties. They
+     are already enforced by the hard-fail check, so pairing them against a
+     resume line proves nothing and lets "本科及以上学历在读" argue a match. */
+  function isEligibility(text) {
+    var t = String(text || '');
+    return /本科|专科|大专|硕士|博士|研究生|学历|学位|在读|应届|届别|\d{4}\s*届|专业不限|专业要求|统招|全日制/.test(t);
+  }
+
   /* Requirement ↔ evidence pairing: the actual persuasion payload.
      Greedy stock assignment — each resume line is used at most once, so three
      different requirements never all point at the same bullet. */
   function buildPairs(profile, scored, index) {
     var parsed = scored.parsed;
     var reqs = [];
-    parsed.must.forEach(function (t) { reqs.push({ text: t, type: 'must' }); });
-    parsed.duty.forEach(function (t) { reqs.push({ text: t, type: 'duty' }); });
+    parsed.must.forEach(function (t) { if (!isEligibility(t)) reqs.push({ text: t, type: 'must' }); });
+    parsed.duty.forEach(function (t) { if (!isEligibility(t)) reqs.push({ text: t, type: 'duty' }); });
 
     var evidence = profile.evidence.filter(function (e) { return e.text.length >= 8; });
     var cand = [];
     reqs.forEach(function (req, ri) {
       if (req.text.length < 8) return;
-      var rt = tokens(req.text + ' ' + (scored.job.t || ''));
+      // Match against the requirement alone. Folding the job title in let a
+      // chemistry resume pair with a product posting through the word 实验室
+      // in "未来生活实验室" — the title names the team, not the work.
+      var rt = tokens(req.text);
       var rSet = toSet(rt);
+      var reqTri = triSet(req.text);
       var key = Object.keys(rSet).sort().join('|');
       evidence.forEach(function (ev, ei) {
         var et = ev._tk || (ev._tk = tokens(ev.text));
@@ -563,6 +654,16 @@
         var ew = ev._tw || (ev._tw = weightSum(et, index.idf, 6));
         var sim = similarity(eSet, ew, rSet, index.idf);
         if (sim.score <= 0) return;
+        // A pairing must share at least one specific word, and that word must
+        // sit in a run of at least three consecutive characters. Overlap built
+        // from 完成/独立/负责 or from a bigram straddling two different words
+        // ("计提" out of 设计提供 and 累计提交) says nothing about the work.
+        var nSpec = specificCount(ev.text, rSet, et);
+        if (!nSpec) return;
+        if (nSpec < 2 && !sharesTri(ev._tri || (ev._tri = triSet(ev.text)), reqTri)) return;
+        /* Ranking stays purely lexical: outcome bullets are recognised by
+           concept further down and are deliberately not scored here, so every
+           posting in the pool is compared on the same basis. */
         var v = sim.score * (ev.nums.length ? 1.3 : 1) * (req.type === 'must' ? 1.15 : 1);
         cand.push({ ri: ri, ei: ei, v: v, key: key, sim: sim, req: req });
       });
@@ -600,16 +701,65 @@
     var segs = s.split(/[。；]/).filter(function (x) { return x.trim(); });
     if (segs.length > 1 && segs[0].length < 8) s = segs[0] + '，' + segs[1];
     else if (segs.length) s = segs[0];
-    if (s.length > 46) {
-      var comma = s.lastIndexOf('，', 42);
-      s = s.slice(0, comma > 18 ? comma : 44) + '…';
-    }
+    s = s.replace(/[，、]\s*$/, '');
+    // No ellipsis here: a hard cut mid-clause is what makes a quote read as
+    // unread. Keep the whole clause and let the caller cut on a boundary.
     return s;
+  }
+
+  /* A before/after number is the hardest thing an intern resume can say, and it
+     is invisible to bigram overlap: "推动活跃用户从 1200 提升到 3100" shares
+     almost nothing with a JD that says "用户增长". So it is not scored — it is
+     looked up by concept and given its own line. Deliberately kept out of the
+     pair list so that ranking stays purely lexical and comparable across the
+     pool. */
+  function pickResult(profile, scored) {
+    var jd = (scored.parsed.duty || []).concat(scored.parsed.must || []).join(' ');
+    var labels = resultConcepts(jd);
+    if (!labels.length) return null;
+
+    var outcome = profile.evidence.filter(function (e) { return outcomeIn(e.text); });
+    if (!outcome.length) return null;
+
+    // Score each outcome line, and record which metric family it speaks in,
+    // so the sentence can name the JD concept this line actually answers.
+    var best = null;
+    outcome.forEach(function (e) {
+      var clause = resultClause(e.text);
+      var nums = (clause.match(/[\d.]+/g) || []).length;
+      var fams = resultConcepts(e.text).map(function (c) { return RESULT_FAMILY[c] || 'other'; });
+      // Prefer the line with the most concrete movement, then the shorter clause.
+      var k = nums * 10 - clause.length / 100;
+      if (!best || k > best.k) best = { k: k, clause: clause, text: e.text, nums: nums, fams: fams };
+    });
+    if (!best) return null;
+
+    // The label is the JD's own primary metric, not whichever metric the
+    // resume happens to satisfy. Hunting the JD for a concept that flatters the
+    // resume is the same overreach in the other direction.
+    var label = labels[0];
+    var aligned = best.fams.indexOf(RESULT_FAMILY[label] || 'other') >= 0;
+    return { label: label, clause: best.clause, full: best.text, aligned: aligned };
   }
 
   function match(profile, jobs, index) {
     var scored = jobs.map(function (job, idx) { return scoreJob(job, profile, index, idx); });
-    scored.forEach(function (s) { s.pairs = buildPairs(profile, s, index); });
+    scored.forEach(function (s) {
+      s.pairs = buildPairs(profile, s, index);
+      s.result = pickResult(profile, s);
+    });
+    /* Pool facts the message is allowed to quote. Counted once per match, from
+       the same pair lists the reader can see. */
+    var viable = scored.filter(function (s) { return !s.hardFail; });
+    var ge = [0, 0, 0, 0];
+    viable.forEach(function (s) { for (var k = 0; k <= Math.min(s.pairs.length, 3); k++) ge[k]++; });
+    var topScore = viable.slice().sort(function (a, b) { return b.score - a.score; })[0];
+    var pool = {
+      viable: viable.length,
+      ge: ge,
+      top: topScore ? { score: topScore.score, pairs: topScore.pairs, job: topScore.job } : null
+    };
+    scored.forEach(function (s) { s.pool = pool; });
     scored.sort(function (a, b) {
       if (a.hardFail !== b.hardFail) return a.hardFail ? 1 : -1;
       var pa = a.pairs.length ? a.pairs[0].strength : 0;
@@ -738,8 +888,9 @@
   /* ------------------------------------------------------ WeChat message */
 
   /* The delivered text has one job: make the operator's job (paste, argue,
-     close) easy on a single phone screen. Three quotes from the JD paired with
-     three lines from the resume, then the two facts that decide the reply. */
+     close) easy on a single phone screen — and make the argument land. Every
+     line is either a verbatim substring of the JD, a verbatim substring of the
+     resume, or a count taken from the pool. No adjectives. */
   function buildMessage(profile, scored, rw) {
     var job = scored.job;
     var pairs = (scored.pairs || []).slice(0, 3);
@@ -750,11 +901,24 @@
     if (meta) out.push(meta);
     out.push('');
 
-    out.push('为什么是它' + (pairs.length ? '（' + pairs.length + ' 处对得上）' : ''));
-    pairs.forEach(function (p, i) {
-      out.push((i + 1) + '「' + short(p.req, 30) + '」');
-      out.push('  → 你「' + short(p.ev, 40) + '」');
-    });
+    if (pairs.length) {
+      out.push('为什么是它（' + pairs.length + ' 处原话对得上）：');
+      pairs.forEach(function (p, i) {
+        var shared = toSet(p.hits || []);
+        out.push((i + 1) + ' 它写「' + span(p.req, shared) + '」');
+        out.push('   你写「' + span(p.ev, shared) + '」');
+      });
+    } else {
+      out.push('为什么是它：库里没有哪个岗能和你简历里的经历对上一句原话。这段先别发。');
+    }
+
+    var res = scored.result;
+    if (res) {
+      var only = profile.evidence.filter(function (e) { return outcomeIn(e.text); }).length === 1;
+      var tail = res.aligned ? '，正好是同一类指标' : '，跟它要的不是同一个数，只能算旁证';
+      out.push('它要的是「' + res.label + '」，你简历里' + (only ? '唯一一条' : '') +
+        '前后变化是：' + res.clause.replace(/^(推动|帮助)/, '') + tail + '。');
+    }
 
     var fit = fitLine(profile, job);
     if (fit) out.push('· ' + fit);
@@ -762,8 +926,22 @@
     var risk = (scored.gates || []).filter(function (g) { return g.level === 'hard' || g.level === 'soft'; })[0];
     if (risk) out.push('· 要对好的一点：' + risk.text + '。');
 
+    var pool = scored.pool;
+    if (pool && pairs.length) {
+      var depth = pairs.length;
+      var digs = pool.ge[depth] !== undefined ? pool.ge[depth] : 0;
+      var line = '· ' + pool.viable + ' 个能投的岗里，能对到 ' + depth + ' 段原话的只有 ' + digs + ' 个。';
+      // Only contrast against a higher-scoring posting that argues for less —
+      // otherwise the sentence contradicts the list it is explaining.
+      var top = pool.top;
+      if (top && top.score > scored.score && top.pairs.length < depth) {
+        line += top.score + ' 分那个只对到 ' + top.pairs.length + ' 段。';
+      }
+      out.push(line);
+    }
+
     out.push('');
-    out.push('回「跟」我把简历按这个岗排好发你，改动只有顺序和开头一段，公司、时间、数字都不动。');
+    out.push('回「跟」我按这个岗重排简历发你，只动顺序和开头一段，公司、时间、数字不动。');
     return out.join('\n');
   }
 
@@ -792,9 +970,83 @@
     return bits.join('；') + '，时间这关直接过。';
   }
 
-  function short(s, n) {
-    var t = String(s).replace(/\s+/g, ' ').trim();
-    return t.length > n ? t.slice(0, n - 1) + '…' : t;
+  /* How many distinct tokens of this fragment also appear in the reference. */
+  function overlapCount(body, refSet) {
+    var tk = tokens(body), got = Object.create(null), n = 0;
+    for (var i = 0; i < tk.length; i++) {
+      if (refSet[tk[i]] && !got[tk[i]]) { got[tk[i]] = 1; n++; }
+    }
+    return n;
+  }
+
+  /* How much of a clause's overlap is specific rather than filler. A quote is
+     worth printing only when it carries words that name the work. Accepts an
+     already-tokenised body so callers in the scoring loop do not pay twice. */
+  function specificCount(body, refSet, tkArg) {
+    var tk = tkArg || tokens(body), got = Object.create(null), n = 0;
+    for (var i = 0; i < tk.length; i++) {
+      if (refSet[tk[i]] && !got[tk[i]] && !GENERIC_BG[tk[i]]) { got[tk[i]] = 1; n++; }
+    }
+    return n;
+  }
+
+  /* Bigram overlap alone can be produced by coincidence: "产品设|计提|供" against
+     "累|计提|交" shares 计提 without either side saying anything about the other.
+     A real match holds three characters in a row, so test trigrams, which is a
+     single pass per string rather than the quadratic alignment. */
+  function triSet(s) {
+    var t = String(s || '').toLowerCase().replace(/\s+/g, '');
+    var set = Object.create(null);
+    for (var i = 0; i + 2 < t.length; i++) set[t.slice(i, i + 3)] = 1;
+    return set;
+  }
+  function sharesTri(aSet, bSet) {
+    for (var k in aSet) if (bSet[k]) return true;
+    return false;
+  }
+
+  /* Return the run of adjacent whole clauses that says the most shared things
+     per character. Always a verbatim substring, always clause-bounded — never
+     cut mid-clause, because a trailing ellipsis is what makes a quote read as
+     if nothing was understood. Density rather than raw overlap, so the quote
+     points at the shared words instead of pasting the whole bullet. */
+  function span(text, refSet, maxChars) {
+    var t = punct(String(text || '').replace(/\s+/g, ' ').trim())
+      .replace(/^[-–—·•\s]+/, '')
+      .replace(/^(岗位职责|工作职责|职位描述|任职要求|职位要求|岗位要求|任职资格)[:：]\s*/, '')
+      .replace(/^[0-9]{1,2}[.、)）]\s*/, '')
+      .replace(/[。；]\s*$/, '');
+    var segs = t.split(/([，、；。])/);
+    var frags = [];
+    for (var i = 0; i < segs.length; i += 2) {
+      var body = (segs[i] || '').trim();
+      if (!body) continue;
+      // Only specific shared words count toward the quote. Filler overlap
+      // ("独立完成" appearing in both) would otherwise pull the window onto
+      // a clause that shares grammar but not subject matter.
+      frags.push({ body: body, delim: segs[i + 1] || '', hit: specificCount(body, refSet) });
+    }
+    if (!frags.length) return t;
+    var cap = maxChars || 32;
+    var best = null;
+    for (var a = 0; a < frags.length; a++) {
+      var hit = 0, joined = '';
+      for (var b = a; b < frags.length && b < a + 3; b++) {
+        var add = (b > a ? frags[b - 1].delim : '') + frags[b].body;
+        // A first fragment is always taken whole, however long: shortening it
+        // would mean cutting mid-clause, which is the exact failure we are
+        // fixing. Only the extension of a run to a second clause is capped.
+        if (joined && joined.length + add.length > cap) break;
+        joined += add;
+        hit += frags[b].hit;
+        if (hit === 0) continue;
+        // Shared words per character, linear: a second clause has to pay for
+        // its own length, so a quote does not quietly swallow the whole bullet.
+        var score = hit / joined.length;
+        if (!best || score > best.score) best = { score: score, text: joined };
+      }
+    }
+    return best ? best.text : frags[0].body;
   }
 
   global.JOEngine = {
@@ -802,6 +1054,6 @@
     detectSkills: detectSkills, familyOf: familyOf, parseResume: parseResume,
     splitJd: splitJd, buildIndex: buildIndex, match: match, rewrite: rewrite,
     buildMessage: buildMessage, checkNumbers: checkNumbers,
-    guessResumeFamily: guessResumeFamily, trimReq: trimReq
+    guessResumeFamily: guessResumeFamily, trimReq: trimReq, outcomeIn: outcomeIn, span: span
   };
 })(typeof window !== 'undefined' ? window : globalThis);
