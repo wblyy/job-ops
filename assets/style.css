@@ -449,6 +449,15 @@ textarea:focus, input:focus, .btn:focus-visible, .row:focus-visible {
 
 .list { border-top: 1px solid var(--ink); }
 
+.list-note {
+  font-size: 11px;
+  color: var(--ink3);
+  line-height: 1.65;
+  margin: 0 0 10px;
+  padding-left: 10px;
+  border-left: 2px solid var(--line);
+}
+
 .row {
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr) 62px 52px;
